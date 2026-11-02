@@ -1,43 +1,11 @@
-// Limites de negócio (antes eram "números mágicos" espalhados no código)
-const PRIORITY_THRESHOLD = 1000; // acima disso, o item é prioritário para admins
-const USER_VALUE_LIMIT = 500; // usuários comuns só veem itens até este valor
+// Limites de negócio que antes apareciam como números mágicos (1000 e 500).
+const ADMIN_PRIORITY_THRESHOLD = 1000;
+const USER_VALUE_LIMIT = 500;
 
-// Admins: itens caros ganham a marca de prioridade (comportamento mantido do original)
-function markPriority(item) {
-  if (item.value > PRIORITY_THRESHOLD) {
-    item.priority = true;
-  }
-}
+// --- Formatadores (Replace Conditional with Polymorphism) ---
+// Cada formato de relatório sabe montar seu próprio cabeçalho, linha e rodapé.
 
-// --- Regras por perfil de usuário (Strategy) ---
-// Cada perfil sabe quais itens pode ver e quais devem ser destacados.
-const adminPolicy = {
-  canSee: () => true,
-  prepare: markPriority,
-  isHighlighted: (item) => Boolean(item.priority),
-};
-
-const userPolicy = {
-  canSee: (item) => item.value <= USER_VALUE_LIMIT,
-  prepare: () => {},
-  isHighlighted: () => false,
-};
-
-// Perfis desconhecidos não veem nenhum item (mesmo comportamento do original)
-const noAccessPolicy = {
-  canSee: () => false,
-  prepare: () => {},
-  isHighlighted: () => false,
-};
-
-const ROLE_POLICIES = new Map([
-  ['ADMIN', adminPolicy],
-  ['USER', userPolicy],
-]);
-
-// --- Formatos de saída (Replace Conditional with Polymorphism) ---
-// Todos os formatadores têm a mesma interface: header, row e footer.
-class CsvFormatter {
+class CsvReportFormatter {
   header() {
     return 'ID,NOME,VALOR,USUARIO\n';
   }
@@ -51,7 +19,7 @@ class CsvFormatter {
   }
 }
 
-class HtmlFormatter {
+class HtmlReportFormatter {
   header(user) {
     return (
       '<html><body>\n' +
@@ -62,35 +30,53 @@ class HtmlFormatter {
     );
   }
 
-  row(item, _user, highlighted) {
-    const style = highlighted ? ' style="font-weight:bold;"' : '';
-    return `<tr${style}><td>${item.id}</td><td>${item.name}</td><td>${item.value}</td></tr>\n`;
+  row(item, user, highlighted) {
+    const openTag = highlighted ? '<tr style="font-weight:bold;">' : '<tr>';
+    return `${openTag}<td>${item.id}</td><td>${item.name}</td><td>${item.value}</td></tr>\n`;
   }
 
   footer(total) {
-    return '</table>\n' + `<h3>Total: ${total}</h3>\n` + '</body></html>\n';
+    return `</table>\n<h3>Total: ${total}</h3>\n</body></html>\n`;
   }
 }
 
 const FORMATTERS = new Map([
-  ['CSV', new CsvFormatter()],
-  ['HTML', new HtmlFormatter()],
+  ['CSV', new CsvReportFormatter()],
+  ['HTML', new HtmlReportFormatter()],
 ]);
 
-// --- Funções auxiliares (Extract Method) ---
-function policyFor(user) {
-  return ROLE_POLICIES.get(user.role) ?? noAccessPolicy;
-}
+// --- Políticas por papel de usuário ---
+// Cada política decide quais itens o usuário enxerga e quais recebem destaque.
 
-function selectVisibleItems(items, policy) {
-  const visible = items.filter((item) => policy.canSee(item));
-  visible.forEach((item) => policy.prepare(item));
-  return visible;
-}
+const ROLE_POLICIES = new Map([
+  [
+    'ADMIN',
+    {
+      isVisible: () => true,
+      // Comportamento original preservado: o item recebe a marca de prioridade.
+      prepare: (item) => {
+        if (item.value > ADMIN_PRIORITY_THRESHOLD) {
+          item.priority = true;
+        }
+      },
+      isHighlighted: (item) => Boolean(item.priority),
+    },
+  ],
+  [
+    'USER',
+    {
+      isVisible: (item) => item.value <= USER_VALUE_LIMIT,
+      prepare: () => {},
+      isHighlighted: () => false,
+    },
+  ],
+]);
 
-function sumValues(items) {
-  return items.reduce((total, item) => total + item.value, 0);
-}
+const NO_ACCESS_POLICY = {
+  isVisible: () => false,
+  prepare: () => {},
+  isHighlighted: () => false,
+};
 
 export class ReportGenerator {
   constructor(database) {
@@ -103,8 +89,9 @@ export class ReportGenerator {
    * - Users comuns só veem itens com valor <= 500.
    */
   generateReport(reportType, user, items) {
-    const policy = policyFor(user);
-    const visibleItems = selectVisibleItems(items, policy);
+    const policy = ROLE_POLICIES.get(user.role) ?? NO_ACCESS_POLICY;
+    const visibleItems = items.filter((item) => policy.isVisible(item));
+    visibleItems.forEach((item) => policy.prepare(item));
 
     const formatter = FORMATTERS.get(reportType);
     if (!formatter) {
@@ -114,7 +101,7 @@ export class ReportGenerator {
     const body = visibleItems
       .map((item) => formatter.row(item, user, policy.isHighlighted(item)))
       .join('');
-    const total = sumValues(visibleItems);
+    const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
 
     return (formatter.header(user) + body + formatter.footer(total)).trim();
   }
